@@ -6,7 +6,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>PKM Lite - Leitor Markdown v1.6</title>
+    <title>PKM Lite - Leitor Markdown v1.6.1</title>
     <meta name="theme-color" content="#1e1e1e">
     <link rel="manifest" href="manifest.json">
     
@@ -33,6 +33,9 @@
         #app-container.show-toc { grid-template-columns: 0 1fr 250px; }
         #app-container.show-all { grid-template-columns: 300px 1fr 250px; }
         aside#sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border-color); overflow-y: auto; height: 100vh; position: sticky; top: 0; padding: 1rem; display: none; }
+        #debug-console { position: fixed; right: 0; top: 50px; width: 300px; height: 300px; background: rgba(0,0,0,0.9); color: #0f0; font-family: monospace; font-size: 10px; padding: 10px; overflow-y: auto; z-index: 99998; border-left: 2px solid #0f0; display: none; }
+        #debug-console.visible { display: block; }
+        #debug-console .log-entry { margin-bottom: 5px; border-bottom: 1px solid #333; padding-bottom: 3px; }
         .show-sidebar aside#sidebar { display: block; }
         .lib-item { padding: 10px; border-radius: 6px; margin-bottom: 5px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
         .lib-item:hover { background: rgba(0,0,0,0.05); }
@@ -78,6 +81,7 @@
              <button class="btn-icon" id="btn-handsfree" title="Hands-free" onclick="Config.toggleHandsFree()">🎙️</button>
              <button class="btn-icon" title="Configurações" onclick="UI.toggleSettings()">⚙️</button>
              <button class="btn-icon" title="Sumário" onclick="UI.toggleTOC()">📑</button>
+             <button class="btn-icon" title="Debug Console" onclick="UI.toggleDebug()">🐛</button>
         </div>
     </header>
 
@@ -100,7 +104,7 @@
         <main>
             <div id="content">
                 <div style="text-align:center; margin-top:100px; color:#888">
-                    <h2>MD Reader v1.6</h2>
+                    <h2>MD Reader v1.6.1</h2>
                     <p>Carregue um arquivo para começar.</p>
                 </div>
             </div>
@@ -111,6 +115,8 @@
             <div id="toc-list"></div>
         </aside>
     </div>
+
+    <div id="debug-console"></div>
 
     <div id="media-bar">
         <div style="width:30%">
@@ -132,6 +138,55 @@
     </div>
 
     <script>
+        // --- DEBUG CONSOLE ---
+        const DebugConsole = {
+            maxLogs: 100,
+            init() {
+                const original = console.log;
+                const originalWarn = console.warn;
+                const originalError = console.error;
+
+                console.log = (...args) => {
+                    original.apply(console, args);
+                    this.addLog('LOG', args.join(' '));
+                };
+
+                console.warn = (...args) => {
+                    originalWarn.apply(console, args);
+                    this.addLog('WARN', args.join(' '), '#ff0');
+                };
+
+                console.error = (...args) => {
+                    originalError.apply(console, args);
+                    this.addLog('ERROR', args.join(' '), '#f00');
+                };
+
+                this.addLog('INFO', 'Debug Console iniciado - v1.6.1', '#0ff');
+            },
+
+            addLog(type, message, color = '#0f0') {
+                const consoleEl = document.getElementById('debug-console');
+                if (!consoleEl) return;
+
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.style.color = color;
+
+                const time = new Date().toLocaleTimeString();
+                entry.innerHTML = `<strong>[${time}] ${type}:</strong> ${message}`;
+
+                consoleEl.appendChild(entry);
+
+                // Limita quantidade de logs
+                while (consoleEl.children.length > this.maxLogs) {
+                    consoleEl.removeChild(consoleEl.firstChild);
+                }
+
+                // Auto-scroll para o final
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+        };
+
         // --- 1. BANCO DE DADOS (Correção: Promise Nativa) ---
         const DB = {
             dbName: 'MDLibraryDB',
@@ -234,10 +289,16 @@ const Config = {
                 TTS.buildPlaylistFromDOM();
 
                 // 6. Mostra o media-bar automaticamente quando MD é carregado (Android fix)
+                console.log('MD renderizado, mostrando media-bar em 100ms...');
                 setTimeout(() => {
                     const bar = document.getElementById('media-bar');
+                    console.log('Media-bar element:', bar);
+                    console.log('Media-bar classList:', bar?.className);
                     if (bar && !bar.classList.contains('visible')) {
                         bar.classList.add('visible');
+                        console.log('Media-bar classe "visible" adicionada');
+                    } else {
+                        console.log('Media-bar já estava visible ou não existe');
                     }
                 }, 100);
             },
@@ -1317,7 +1378,12 @@ updateDisplay() {
                 s.style.display = s.style.display === 'none' ? 'block' : 'none';
                 l.style.display = s.style.display === 'none' ? 'block' : 'none';
             },
-            toggleTOC: () => document.getElementById('app-container').classList.toggle('show-toc')
+            toggleTOC: () => document.getElementById('app-container').classList.toggle('show-toc'),
+            toggleDebug: () => {
+                const debugEl = document.getElementById('debug-console');
+                debugEl.classList.toggle('visible');
+                console.log('Debug console toggled');
+            }
         };
 
         function tableToSpeech(tableEl) {
@@ -1347,11 +1413,23 @@ function setHandsFree(v) {
 
         // Boot
         window.onload = () => {
+            // Inicia debug console PRIMEIRO
+            DebugConsole.init();
+            console.log('PKMLite v1.6.1 iniciando...');
+
             Config.apply();
-            DB.init().then(Library.loadList);
+            console.log('Configurações aplicadas');
+
+            DB.init().then(() => {
+                console.log('Database inicializado');
+                Library.loadList();
+            });
 
             // Pré-carrega vozes (Android Chrome)
-            TTS.initVoices();
+            console.log('Pré-carregando vozes TTS...');
+            TTS.initVoices().then(() => {
+                console.log('Vozes TTS carregadas');
+            });
 
             // Detecção de scroll manual
             let scrollTimer = null;
