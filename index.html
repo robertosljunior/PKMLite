@@ -27,8 +27,8 @@
         :root { --bg-color: #ffffff; --text-color: #2c3e50; --sidebar-bg: #f8f9fa; --primary: #007bff; --accent: #007bff; --border-color: #e9ecef; --font-main: 'Inter', sans-serif; --font-code: 'JetBrains Mono', monospace; --max-width: 720px; --font-size: 18px; --line-height: 1.8; }
         [data-theme="dark"] { --bg-color: #1a1a1a; --text-color: #e0e0e0; --sidebar-bg: #252525; --border-color: #444; --accent: #4dabf7; }
         [data-theme="sepia"] { --bg-color: #f4ecd8; --text-color: #5b4636; --sidebar-bg: #e4dcc8; --border-color: #d3c4a9; --accent: #d35400; }
-        body { margin: 0; font-family: var(--font-main); background-color: var(--bg-color); color: var(--text-color); transition: background 0.3s; overflow-x: hidden; padding-bottom: 0; }
-        #app-container { display: grid; grid-template-columns: 0 1fr 0; min-height: 100vh; transition: 0.3s; position: relative; }
+        body { margin: 0; font-family: var(--font-main); background-color: var(--bg-color); color: var(--text-color); transition: background 0.3s; overflow-x: hidden; padding-bottom: 90px; }
+        #app-container { display: grid; grid-template-columns: 0 1fr 0; min-height: 100vh; transition: 0.3s; }
         #app-container.show-sidebar { grid-template-columns: 300px 1fr 0; }
         #app-container.show-toc { grid-template-columns: 0 1fr 250px; }
         #app-container.show-all { grid-template-columns: 300px 1fr 250px; }
@@ -40,8 +40,8 @@
         .lib-item { padding: 10px; border-radius: 6px; margin-bottom: 5px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
         .lib-item:hover { background: rgba(0,0,0,0.05); }
         .lib-item.active { background: rgba(var(--primary), 0.1); border-left: 3px solid var(--accent); }
-        main { position: relative; overflow: visible; }
-        #content { margin-top: 60px; padding: 40px 20px 150px 20px; max-width: var(--max-width); margin: 0 auto; line-height: var(--line-height); font-size: var(--font-size); }
+        main { overflow: visible; }
+        #content { margin-top: 60px; padding: 40px 20px 20px 20px; max-width: var(--max-width); margin: 0 auto; line-height: var(--line-height); font-size: var(--font-size); }
         aside#toc { background: var(--bg-color); border-left: 1px solid var(--border-color); height: 100vh; overflow-y: auto; position: sticky; top: 0; padding: 80px 15px 20px 15px; font-size: 0.85rem; display: none; }
         .show-toc aside#toc, .show-all aside#toc { display: block; }
         #toc ul { list-style: none; padding: 0; } #toc li { margin-bottom: 8px; } #toc a { text-decoration: none; color: var(--text-color); opacity: 0.7; display: block; transition: 0.2s; border-left: 2px solid transparent; padding-left: 8px;} #toc a:hover, #toc a.active { opacity: 1; color: var(--accent); border-left-color: var(--accent); font-weight: 600; } #toc .toc-h3 { margin-left: 15px; font-size: 0.9em; }
@@ -291,7 +291,23 @@ const Config = {
                 TTS.buildPlaylistFromDOM();
                 console.log('Playlist construída. Total de capítulos:', TTS.playlist.length);
 
-                // 6. Mostra o media-bar automaticamente quando MD é carregado (Android fix)
+                // 6. Verifica posicionamento do media-bar (Android debug)
+                setTimeout(() => {
+                    const bar = document.getElementById('media-bar');
+                    if (bar) {
+                        const rect = bar.getBoundingClientRect();
+                        const computed = getComputedStyle(bar);
+                        console.log('[Media-bar Debug] position:', computed.position);
+                        console.log('[Media-bar Debug] bottom:', computed.bottom);
+                        console.log('[Media-bar Debug] z-index:', computed.zIndex);
+                        console.log('[Media-bar Debug] rect.top:', rect.top);
+                        console.log('[Media-bar Debug] rect.bottom:', rect.bottom);
+                        console.log('[Media-bar Debug] window.innerHeight:', window.innerHeight);
+                        console.log('[Media-bar Debug] Está visível na viewport?', rect.top < window.innerHeight && rect.bottom > 0);
+                    }
+                }, 200);
+
+                // 7. MD renderizado
                 console.log('MD renderizado completamente.');
             },
 
