@@ -53,6 +53,11 @@
         #media-bar * { color: white !important; }
         .player-controls { display: flex; gap: 20px; align-items: center; font-size: 1.5rem; }
         .btn-icon { background:none; border:none; font-size: 1.2rem; cursor: pointer; color: var(--text-color); padding: 5px; }
+        /* Indicador de microfone */
+        #mic-indicator { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 200px; height: 200px; background: rgba(0, 123, 255, 0.9); border-radius: 50%; display: none; align-items: center; justify-content: center; z-index: 100000; animation: pulse 1.5s ease-in-out infinite; box-shadow: 0 0 30px rgba(0, 123, 255, 0.5); }
+        #mic-indicator.active { display: flex; }
+        #mic-indicator::after { content: '🎤'; font-size: 80px; }
+        @keyframes pulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; } 50% { transform: translate(-50%, -50%) scale(1.1); opacity: 1; } }
         @media (max-width: 768px) { #app-container.show-toc { grid-template-columns: 0 1fr 0; } aside#toc { display: none; } }
         /* Heading em reprodução */
 #content .tts-playing {
@@ -118,6 +123,8 @@
     </div>
 
     <div id="debug-console"></div>
+
+    <div id="mic-indicator"></div>
 
     <div id="media-bar">
         <div style="width:30%">
@@ -647,6 +654,8 @@ applySpeechDictionary(text) {
     this.isPlaying = true;
     this.updateControls();
 
+    console.log('[TTS] playFromHere iniciado');
+
     // Adquire Wake Lock para evitar que o device durma
     await this.acquireWakeLock();
 
@@ -668,26 +677,34 @@ applySpeechDictionary(text) {
 
     while (!this.stopFlag) {
       const chap = this.playlist[this.currentChapter];
-      if (!chap) break;
+      if (!chap) {
+        console.log('[TTS] Fim da playlist');
+        break;
+      }
 
       const token = chap.tokens[this.currentToken];
       if (!token) {
         // fim do capítulo -> próximo
+        console.log('[TTS] Fim do capítulo, avançando...');
         this.currentChapter += 1;
         this.currentToken = 0;
         this.updateDisplay();
         continue;
       }
 
-      // toca token com gates
+      console.log(`[TTS] Tocando token ${this.currentToken} do cap ${this.currentChapter}: tipo=${token.type}`);
+
+      // CRÍTICO: Aguarda o token terminar COMPLETAMENTE antes de avançar
       await this.playToken(token);
 
-      // avança
+      console.log(`[TTS] Token ${this.currentToken} concluído`);
+
+      // avança apenas DEPOIS que o token terminou
       this.currentToken += 1;
       this.updateDisplay();
 
       // micro-pausa entre tokens (dá "respiro")
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 300));
     }
 
     // Limpa o keepAlive interval
@@ -698,6 +715,7 @@ applySpeechDictionary(text) {
 
     this.isPlaying = false;
     this.updateControls(true);
+    console.log('[TTS] playFromHere finalizado');
   },
 
   async playToken(token) {
@@ -730,8 +748,11 @@ if (token.type === 'subheading') {
     if (token.type === 'list') {
       const count = token.items.length;
 
+      console.log(`[TTS] Lista encontrada com ${count} itens`);
+
       if (Config.settings.askOnList && Voice.enabled && count >= 6) {
         const ans = await Voice.askYesNo(`Encontrei uma lista com ${count} itens. Quer que eu leia a lista? Diga sim ou não.`);
+        console.log(`[TTS] Resposta do usuário para lista:`, ans);
         if (ans === false) {
           await this.speak(`Lista ignorada.`);
           return;
@@ -740,10 +761,17 @@ if (token.type === 'subheading') {
 
       // lê listinha item por item (bem mais natural)
       await this.speak(`Lista com ${count} itens.`);
+
       for (let i = 0; i < token.items.length; i++) {
-        if (this.stopFlag) return;
+        if (this.stopFlag) {
+          console.log('[TTS] stopFlag detectado durante leitura de lista');
+          return;
+        }
+        console.log(`[TTS] Lendo item ${i + 1} de ${count}`);
         await this.speak(`Item ${i + 1}: ${token.items[i]}`);
       }
+
+      console.log('[TTS] Lista concluída');
       return;
     }
 
@@ -1198,6 +1226,8 @@ updateDisplay() {
     const rec = this.getRecognition();
     if (!this.enabled || !rec) return null;
 
+    console.log('[Voice] askYesNo iniciado:', promptText);
+
     // evita capturar o próprio TTS (Android: tenta 2x)
     try {
       speechSynthesis.cancel();
@@ -1211,22 +1241,44 @@ updateDisplay() {
 
     const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
     await this.speakOnce(promptText, rate);
-    await new Promise(r => setTimeout(r, 250));
+
+    // Aguarda um pouco mais antes de iniciar o reconhecimento
+    await new Promise(r => setTimeout(r, 500));
+
+    // Mostra indicador visual de microfone
+    const micIndicator = document.getElementById('mic-indicator');
+    if (micIndicator) {
+      micIndicator.classList.add('active');
+      console.log('[Voice] Indicador de microfone ativado');
+    }
 
     return new Promise((resolve) => {
       let done = false;
       const finish = (val) => {
         if (done) return;
         done = true;
+
+        // Remove indicador visual
+        if (micIndicator) {
+          micIndicator.classList.remove('active');
+          console.log('[Voice] Indicador de microfone desativado');
+        }
+
         try { rec.stop(); } catch {}
+        console.log('[Voice] askYesNo finalizado com resposta:', val);
         resolve(val);
       };
 
-      const timer = setTimeout(() => finish(null), this.timeoutMs);
+      // Timeout maior para dar tempo do usuário falar
+      const timer = setTimeout(() => {
+        console.log('[Voice] Timeout - usuário não respondeu');
+        finish(null);
+      }, 8000); // 8 segundos
 
       rec.onresult = (e) => {
         clearTimeout(timer);
         const said = this.normalize(e.results?.[0]?.[0]?.transcript);
+        console.log('[Voice] Reconhecido:', said);
 
         const yes = ['sim','claro','pode','ok','ler','leia','manda','vai','positivo'];
         const no  = ['nao','não','negativo','pular','pula','passa','proximo','próximo','skip'];
@@ -1245,12 +1297,13 @@ updateDisplay() {
       // Android Chrome: às vezes onend não dispara
       rec.onend = () => {
         if (!done) {
-          console.log('Recognition ended without result');
+          console.log('[Voice] Recognition ended without result');
         }
       };
 
       try {
         rec.start();
+        console.log('[Voice] Recognition iniciado');
       } catch (e) {
         console.warn('Failed to start recognition:', e);
         clearTimeout(timer);
