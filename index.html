@@ -46,6 +46,20 @@
         .player-controls { display: flex; gap: 20px; align-items: center; font-size: 1.5rem; }
         .btn-icon { background:none; border:none; font-size: 1.2rem; cursor: pointer; color: var(--text-color); padding: 5px; }
         @media (max-width: 768px) { #app-container.show-toc { grid-template-columns: 0 1fr 0; } aside#toc { display: none; } }
+        /* Heading em reprodução */
+#content .tts-playing {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: 6px;
+}
+
+/* opcional: TOC em reprodução (além do active do scroll spy) */
+#toc a.tts-playing {
+  opacity: 1;
+  color: var(--accent);
+  font-weight: 700;
+}
+
     </style>
 </head>
 <body>
@@ -56,7 +70,8 @@
             <span id="doc-title" style="font-weight:600; font-size:0.9rem; margin-top:5px; white-space:nowrap; overflow:hidden; max-width:200px">Minha Biblioteca</span>
         </div>
         <div style="display:flex; gap:10px">
-             <button class="btn-icon" title="Ouvir Podcast" onclick="TTS.togglePanel()">🎧</button>
+             <button class="btn-icon" title="Ouvir" onclick="TTS.togglePanel()">🎧</button>
+             <button class="btn-icon" id="btn-handsfree" title="Hands-free" onclick="Config.toggleHandsFree()">🎙️</button>
              <button class="btn-icon" title="Configurações" onclick="UI.toggleSettings()">⚙️</button>
              <button class="btn-icon" title="Sumário" onclick="UI.toggleTOC()">📑</button>
         </div>
@@ -104,7 +119,7 @@
             <span onclick="TTS.next()" style="cursor:pointer" title="Próximo Capítulo">⏭</span>
         </div>
         <div style="width:30%; text-align:right">
-            <select id="tts-speed" onchange="TTS.setSpeed(this.value)" style="border:none; bg:transparent">
+            <select id="tts-speed" onchange="TTS.setSpeed()" style="border:none; bg:transparent">
                 <option value="1">1.0x</option>
                 <option value="1.5">1.5x</option>
                 <option value="2">2.0x</option>
@@ -157,24 +172,46 @@
         };
 
         // --- 2. CONFIGURAÇÃO ---
-        const Config = {
-            settings: JSON.parse(localStorage.getItem('md_settings')) || { theme: 'light', font: "'Inter', sans-serif" },
-            apply: () => {
-                document.documentElement.setAttribute('data-theme', Config.settings.theme);
-            },
-            setTheme: (t) => {
-                Config.settings.theme = t;
-                localStorage.setItem('md_settings', JSON.stringify(Config.settings));
-                Config.apply();
-            }
-        };
+const Config = {
+  settings: JSON.parse(localStorage.getItem('md_settings')) || {
+    theme: 'light',
+    handsFree: true,
+    askOnTable: true,
+    askOnList: true,
+    readCode: false
+  },
+
+  apply: () => {
+    document.documentElement.setAttribute('data-theme', Config.settings.theme);
+    Voice.enabled = !!Config.settings.handsFree;
+    Config.refreshHandsFreeButton();
+  },
+
+  save: () => localStorage.setItem('md_settings', JSON.stringify(Config.settings)),
+
+  setTheme: (t) => { Config.settings.theme = t; Config.save(); Config.apply(); },
+
+  toggleHandsFree: () => {
+    Config.settings.handsFree = !Config.settings.handsFree;
+    Config.save(); Config.apply();
+  },
+
+  refreshHandsFreeButton: () => {
+    const btn = document.getElementById('btn-handsfree');
+    if (!btn) return;
+    btn.style.opacity = Config.settings.handsFree ? '1' : '0.35';
+    btn.title = Config.settings.handsFree ? 'Hands-free: ON' : 'Hands-free: OFF';
+  }
+};
+
 
         // --- 3. RENDERIZADOR & TOC INTELIGENTE ---
         const Renderer = {
             render: (md) => {
                 // 1. Parse básico
                 marked.setOptions({
-                    highlight: (code, lang) => highlight.highlight(code, { language: highlight.getLanguage(lang) ? lang : 'plaintext' }).value
+                    highlight: (code, lang) => hljs.highlight(code, {
+                         language: hljs.getLanguage(lang) ? lang : 'plaintext' }).value
                 });
                 let html = DOMPurify.sanitize(marked.parse(md));
                 
@@ -190,7 +227,8 @@
                 try { mermaid.run({ nodes: document.querySelectorAll('.mermaid') }); } catch(e){}
                 
                 // 5. Build TTS Playlist
-                TTS.buildPlaylist();
+                //TTS.buildPlaylist();
+                TTS.buildPlaylistFromDOM();
             },
 
             processStructure: (root) => {
@@ -255,122 +293,676 @@
 
         // --- 4. TTS PODCAST ENGINE (Capítulos) ---
         const TTS = {
-            synth: window.speechSynthesis,
-            playlist: [], // { id, title, text }
-            currentIndex: 0,
-            isPlaying: false,
-            utterance: null,
+  synth: window.speechSynthesis,
+  userIsScrolling: false,
+lastAutoScrollAt: 0,
 
-            // Varre o DOM para criar capítulos baseados em H1/H2
-            buildPlaylist: () => {
-                TTS.playlist = [];
-                const root = document.getElementById('content');
-                const elements = Array.from(root.children);
+  playlist: [],     // [{ id,title,tokens:[...] }]
+  currentChapter: 0,
+  currentToken: 0,
+
+  isPlaying: false,
+  utterance: null,
+  stopFlag: false,
+
+  // ===== Util: texto "humano" =====
+  cleanText(s) {
+    return (s || '')
+      .replace(/\s+/g, ' ')
+      .replace(/\u00A0/g, ' ')
+      .trim();
+  },
+
+  ensureEndPunct(s) {
+    if (!s) return '';
+    const last = s.slice(-1);
+    if ('.!?…'.includes(last)) return s;
+    // fim de parágrafo -> dá pausa natural
+    return s + '.';
+  },
+
+  highlightChapterById(id) {
+  // limpa destaque anterior
+  document.querySelectorAll('#content .tts-playing').forEach(el => el.classList.remove('tts-playing'));
+  document.querySelectorAll('#toc a.tts-playing').forEach(el => el.classList.remove('tts-playing'));
+
+  const h = document.getElementById(id);
+  if (h) h.classList.add('tts-playing');
+
+  const tocLink = document.querySelector(`#toc a[href="#${CSS.escape(id)}"]`);
+  if (tocLink) tocLink.classList.add('tts-playing');
+},
+
+scrollToChapterById(id) {
+  const h = document.getElementById(id);
+  if (!h) return;
+
+  // evita brigar com o usuário caso ele esteja rolando manualmente
+  // (você pode remover esse guard se quiser forçar sempre)
+  if (TTS.userIsScrolling) return;
+
+  // header fixo de 50px + folga
+  const y = h.getBoundingClientRect().top + window.scrollY - 70;
+
+  window.scrollTo({
+    top: Math.max(0, y),
+    behavior: 'smooth'
+  });
+},
+
+  // quebra texto grande em chunks (evita TTS engasgar e melhora pausas)
+  chunkText(text, maxLen = 900) {
+    const t = this.cleanText(text);
+    if (t.length <= maxLen) return [t];
+
+    // tenta dividir por frases
+    const sentences = t.split(/(?<=[\.\!\?…])\s+/);
+    const chunks = [];
+    let cur = '';
+
+    for (const s of sentences) {
+      if (!s) continue;
+      if ((cur + ' ' + s).trim().length > maxLen) {
+        if (cur.trim()) chunks.push(cur.trim());
+        cur = s;
+      } else {
+        cur = (cur ? cur + ' ' : '') + s;
+      }
+    }
+    if (cur.trim()) chunks.push(cur.trim());
+    return chunks;
+  },
+
+  // ===== DOM -> playlist tokenizada =====
+  buildPlaylistFromDOM() {
+    const root = document.getElementById('content');
+    const children = Array.from(root.children);
+
+    this.playlist = [];
+    let chapter = { id: 'intro', title: 'Introdução', tokens: [] };
+
+    const pushChapter = () => {
+      if (chapter.tokens.length) this.playlist.push(chapter);
+    };
+
+    const pushToken = (type, payload) => {
+      chapter.tokens.push({ type, ...payload });
+    };
+
+    for (const el of children) {
+      const tag = el.tagName;
+
+      if (tag === 'H1' || tag === 'H2') {
+        pushChapter();
+        chapter = { id: el.id || 'secao', title: this.cleanText(el.innerText) || 'Seção', tokens: [] };
+        continue;
+      }
+
+      if (tag === 'P' || tag === 'BLOCKQUOTE') {
+        const txt = this.ensureEndPunct(this.cleanText(el.innerText));
+        if (txt) pushToken('text', { text: txt });
+        continue;
+      }
+
+      if (tag === 'UL' || tag === 'OL') {
+        const items = Array.from(el.querySelectorAll('li'))
+          .map(li => this.ensureEndPunct(this.cleanText(li.innerText)))
+          .filter(Boolean);
+
+        if (items.length) pushToken('list', { items });
+        continue;
+      }
+
+      if (tag === 'TABLE') {
+        // guarda como estrutura; fala depois (com gate)
+        const rows = Array.from(el.querySelectorAll('tr'))
+          .map(tr => Array.from(tr.querySelectorAll('th,td')).map(td => this.cleanText(td.innerText)));
+        if (rows.length) pushToken('table', { rows });
+        continue;
+      }
+
+      if (tag === 'PRE') {
+        if (Config.settings.readCode) {
+          pushToken('text', { text: 'Trecho de código. ' + this.ensureEndPunct(this.cleanText(el.innerText)) });
+        } else {
+          pushToken('text', { text: 'Trecho de código ignorado.' });
+        }
+        continue;
+      }
+
+      // fallback: pega texto de outros blocos (ex: H3, HR, etc.)
+      const fallback = this.cleanText(el.innerText);
+      if (fallback) pushToken('text', { text: this.ensureEndPunct(fallback) });
+    }
+
+    pushChapter();
+
+    this.currentChapter = 0;
+    this.currentToken = 0;
+
+    // atualiza display
+    this.updateDisplay();
+  },
+
+  // ===== Tabela -> fala “humana” =====
+  tableToSpeech(rows) {
+    if (!rows?.length) return 'Tabela vazia.';
+    const header = rows[0] || [];
+    const body = rows.slice(1);
+
+    let out = `Tabela com ${body.length} linhas e ${header.length} colunas. `;
+    if (header.length) out += `Cabeçalhos: ${header.join(', ')}. `;
+
+    const limit = 20;
+    body.slice(0, limit).forEach((r, i) => {
+      out += `Linha ${i + 1}: ${r.join('; ')}. `;
+    });
+    if (body.length > limit) out += 'Restante omitido. ';
+    return out;
+  },
+
+  // ===== Player token por token (pausas naturais) =====
+  async playFromHere() {
+    this.stopFlag = false;
+    this.isPlaying = true;
+    this.updateControls();
+
+    while (!this.stopFlag) {
+      const chap = this.playlist[this.currentChapter];
+      if (!chap) break;
+
+      const token = chap.tokens[this.currentToken];
+      if (!token) {
+        // fim do capítulo -> próximo
+        this.currentChapter += 1;
+        this.currentToken = 0;
+        this.updateDisplay();
+        continue;
+      }
+
+      // toca token com gates
+      await this.playToken(token);
+
+      // avança
+      this.currentToken += 1;
+      this.updateDisplay();
+
+      // micro-pausa entre tokens (dá “respiro”)
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    this.isPlaying = false;
+    this.updateControls(true);
+  },
+
+  async playToken(token) {
+    if (this.stopFlag) return;
+
+    if (token.type === 'text') {
+      const chunks = this.chunkText(token.text);
+      for (const c of chunks) {
+        if (this.stopFlag) return;
+        await this.speak(c);
+      }
+      return;
+    }
+
+    if (token.type === 'list') {
+      const count = token.items.length;
+
+      if (Config.settings.askOnList && Voice.enabled && count >= 6) {
+        const ans = await Voice.askYesNo(`Encontrei uma lista com ${count} itens. Quer que eu leia a lista? Diga sim ou não.`);
+        if (ans === false) {
+          await this.speak(`Lista ignorada.`);
+          return;
+        }
+      }
+
+      // lê listinha item por item (bem mais natural)
+      await this.speak(`Lista com ${count} itens.`);
+      for (let i = 0; i < token.items.length; i++) {
+        if (this.stopFlag) return;
+        await this.speak(`Item ${i + 1}: ${token.items[i]}`);
+      }
+      return;
+    }
+
+    if (token.type === 'table') {
+      if (Config.settings.askOnTable && Voice.enabled) {
+        const ans = await Voice.askYesNo('Encontrei uma tabela. Quer que eu leia a tabela? Diga sim ou não.');
+        if (ans === false) {
+          await this.speak('Tabela ignorada.');
+          return;
+        }
+      }
+      await this.speak(this.tableToSpeech(token.rows));
+      return;
+    }
+  },
+
+  speak(text) {
+    return new Promise((resolve) => {
+      if (this.stopFlag) return resolve();
+
+      const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
+
+      this.utterance = new SpeechSynthesisUtterance(text);
+      this.utterance.rate = rate;
+
+      this.utterance.onend = () => resolve();
+      this.utterance.onerror = () => resolve();
+
+      this.synth.speak(this.utterance);
+    });
+  },
+
+  // ===== controles =====
+  play() {
+    if (!this.playlist.length) return;
+    this.playFromHere();
+  },
+
+  pauseStop() {
+    this.stopFlag = true;
+    this.synth.cancel();
+    this.isPlaying = false;
+    this.updateControls();
+  },
+
+  toggle() {
+    if (this.isPlaying) this.pauseStop();
+    else this.play();
+  },
+
+  next() {
+    // próximo capítulo
+    this.pauseStop();
+    this.currentChapter = Math.min(this.currentChapter + 1, this.playlist.length - 1);
+    this.currentToken = 0;
+    this.updateDisplay();
+    this.play();
+  },
+
+  prev() {
+    this.pauseStop();
+    this.currentChapter = Math.max(this.currentChapter - 1, 0);
+    this.currentToken = 0;
+    this.updateDisplay();
+    this.play();
+  },
+
+updateDisplay() {
+  const chap = this.playlist[this.currentChapter];
+  if (!chap) return;
+
+  document.getElementById('tts-chapter').innerText = chap.title;
+
+  // highlight + scroll
+  if (chap.id) {
+    this.highlightChapterById(chap.id);
+    this.scrollToChapterById(chap.id);
+  }
+},
+
+
+//   updateDisplay() {
+//     const chap = this.playlist[this.currentChapter];
+//     if (!chap) return;
+//     document.getElementById('tts-chapter').innerText = chap.title;
+//   },
+
+  updateControls(ended = false) {
+    const btn = document.getElementById('tts-play-btn');
+    const status = document.getElementById('tts-status');
+    btn.innerText = this.isPlaying ? '⏸' : '▶';
+    status.innerText = ended ? 'Fim' : (this.isPlaying ? 'Reproduzindo...' : 'Pausado');
+  },
+
+  setSpeed() {
+    // se está tocando, reinicia token atual com nova velocidade
+    if (this.isPlaying) {
+      this.pauseStop();
+      this.play();
+    }
+  },
+
+  togglePanel: () => document.getElementById('media-bar').classList.toggle('visible')
+};
+
+//         const TTS = {
+//             synth: window.speechSynthesis,
+//             playlist: [], // { id, title, text }
+//             currentIndex: 0,
+//             isPlaying: false,
+//             utterance: null,
+
+//             // Varre o DOM para criar capítulos baseados em H1/H2
+//             buildPlaylist: () => {
+//                 TTS.playlist = [];
+//                 const root = document.getElementById('content');
+//                 const elements = Array.from(root.children);
                 
-                let currentChapter = { id: 'intro', title: 'Introdução', text: '' };
+//                 let currentChapter = { id: 'intro', title: 'Introdução', text: '' };
                 
-                elements.forEach(el => {
-                    // Se for Heading, fecha o capítulo anterior e começa novo
-                    if (['H1', 'H2'].includes(el.tagName)) {
-                        if (currentChapter.text.trim().length > 0) {
-                            TTS.playlist.push(currentChapter);
-                        }
-                        currentChapter = { 
-                            id: el.id, 
-                            title: el.innerText, 
-                            text: '' // Inicia vazio
-                        };
-                    } else {
-                        // Acumula texto (ignora scripts, styles, e mascara código)
-                        if(el.tagName === 'PRE') {
-                            currentChapter.text += " . Trecho de código. . ";
-                        } else if (!['SCRIPT', 'STYLE', 'SVG'].includes(el.tagName)) {
-                            currentChapter.text += el.innerText + ' ';
-                        }
-                    }
-                });
-                // Adiciona o último
-                if (currentChapter.text.trim().length > 0) TTS.playlist.push(currentChapter);
+//                 elements.forEach(el => {
+//                     // Se for Heading, fecha o capítulo anterior e começa novo
+//                     if (['H1', 'H2'].includes(el.tagName)) {
+//                         if (currentChapter.text.trim().length > 0) {
+//                             TTS.playlist.push(currentChapter);
+//                         }
+//                         currentChapter = { 
+//                             id: el.id, 
+//                             title: el.innerText, 
+//                             text: '' // Inicia vazio
+//                         };
+//                     } else if (el.tagName === 'TABLE') {
+//                         currentChapter.text += ' [[TABLE]] ';
+//                     } else {
+//                         // Acumula texto (ignora scripts, styles, e mascara código)
+//                         if(el.tagName === 'PRE') {
+//                             currentChapter.text += " . Trecho de código. . ";
+//                         } else if (!['SCRIPT', 'STYLE', 'SVG'].includes(el.tagName)) {
+//                             currentChapter.text += el.innerText + ' ';
+//                         }
+//                     }
+//                 });
+//                 // Adiciona o último
+//                 if (currentChapter.text.trim().length > 0) TTS.playlist.push(currentChapter);
                 
-                TTS.currentIndex = 0;
-                TTS.updateDisplay(0);
-            },
+//                 TTS.currentIndex = 0;
+//                 TTS.updateDisplay(0);
+//             },
 
-            playChapter: (index) => {
-                TTS.synth.cancel(); // Stop hard
-                if (index < 0 || index >= TTS.playlist.length) return;
+//             playChapter: async (index) => {
+//   TTS.synth.cancel();
+//   if (index < 0 || index >= TTS.playlist.length) return;
 
-                TTS.currentIndex = index;
-                const track = TTS.playlist[index];
+//   TTS.currentIndex = index;
+//   const track = TTS.playlist[index];
 
-                TTS.utterance = new SpeechSynthesisUtterance(track.text);
-                TTS.utterance.rate = parseFloat(document.getElementById('tts-speed').value) || 1.0;
+//   // Se o capítulo tem tabela, faz gate por voz
+//   if (Config.settings.askOnTable) {
+//     const hasTable = track.text.includes('[[TABLE]]');
+//     if (hasTable) {
+//       const ans = await Voice.askYesNo('Encontrei uma tabela. Quer que eu leia a tabela? Diga sim ou não.');
+//       if (ans === true) {
+//         // pega as tabelas do DOM na seção inteira (simples)
+//         const tables = Array.from(document.querySelectorAll('#content table'));
+//         const first = tables[0];
+//         const tableSpeech = first ? tableToSpeech(first) : 'Não encontrei a tabela para ler.';
+//         track.text = track.text.replace('[[TABLE]]', tableSpeech);
+//       } else {
+//         // pula leitura de tabela
+//         track.text = track.text.replace('[[TABLE]]', 'Tabela ignorada.');
+//       }
+//     }
+//   }
+
+//   TTS.utterance = new SpeechSynthesisUtterance(track.text);
+//   TTS.utterance.rate = parseFloat(document.getElementById('tts-speed').value) || 1.0;
+//   TTS.utterance.onend = () => TTS.next();
+//   TTS.utterance.onerror = () => { TTS.synth.cancel(); TTS.isPlaying = false; TTS.updateControls(); };
+
+//   TTS.synth.speak(TTS.utterance);
+//   TTS.isPlaying = true;
+
+//   TTS.updateDisplay(index);
+//   TTS.updateControls();
+//   TTS.updateMediaSession(track);
+// },
+
+//             // playChapter: (index) => {
+//             //     TTS.synth.cancel(); // Stop hard
+//             //     if (index < 0 || index >= TTS.playlist.length) return;
+
+//             //     TTS.currentIndex = index;
+//             //     const track = TTS.playlist[index];
+
+//             //     TTS.utterance = new SpeechSynthesisUtterance(track.text);
+//             //     TTS.utterance.rate = parseFloat(document.getElementById('tts-speed').value) || 1.0;
                 
-                // Eventos
-                TTS.utterance.onend = () => TTS.next(); // Auto-play next
-                TTS.utterance.onerror = () => TTS.stop();
+//             //     // Eventos
+//             //     TTS.utterance.onend = () => TTS.next(); // Auto-play next
+//             //     TTS.utterance.onerror = () => TTS.stop();
 
-                TTS.synth.speak(TTS.utterance);
-                TTS.isPlaying = true;
+//             //     TTS.synth.speak(TTS.utterance);
+//             //     TTS.isPlaying = true;
                 
-                TTS.updateDisplay(index);
-                TTS.updateControls();
-                TTS.updateMediaSession(track);
-            },
+//             //     TTS.updateDisplay(index);
+//             //     TTS.updateControls();
+//             //     TTS.updateMediaSession(track);
+//             // },
 
-            toggle: () => {
-                if (TTS.isPlaying) {
-                    TTS.synth.cancel(); // Pause "real" em mobile é bugado, melhor parar.
-                    TTS.isPlaying = false;
-                    TTS.updateControls();
-                } else {
-                    TTS.playChapter(TTS.currentIndex);
-                }
-            },
+//             toggle: () => {
+//                 if (TTS.isPlaying) {
+//                     TTS.synth.cancel(); // Pause "real" em mobile é bugado, melhor parar.
+//                     TTS.isPlaying = false;
+//                     TTS.updateControls();
+//                 } else {
+//                     TTS.playChapter(TTS.currentIndex);
+//                 }
+//             },
 
-            next: () => TTS.playChapter(TTS.currentIndex + 1),
-            prev: () => TTS.playChapter(TTS.currentIndex - 1),
-            setSpeed: (v) => { if(TTS.isPlaying) TTS.playChapter(TTS.currentIndex); }, // Reinicia pra aplicar speed
+//             next: () => TTS.playChapter(TTS.currentIndex + 1),
+//             prev: () => TTS.playChapter(TTS.currentIndex - 1),
+//             setSpeed: (v) => { if(TTS.isPlaying) TTS.playChapter(TTS.currentIndex); }, // Reinicia pra aplicar speed
 
-            updateDisplay: (index) => {
-                if(!TTS.playlist[index]) return;
-                document.getElementById('tts-chapter').innerText = TTS.playlist[index].title;
-            },
+//             updateDisplay: (index) => {
+//                 if(!TTS.playlist[index]) return;
+//                 document.getElementById('tts-chapter').innerText = TTS.playlist[index].title;
+//             },
 
-            updateControls: () => {
-                const btn = document.getElementById('tts-play-btn');
-                const status = document.getElementById('tts-status');
-                btn.innerText = TTS.isPlaying ? '⏸' : '▶';
-                status.innerText = TTS.isPlaying ? 'Reproduzindo...' : 'Pausado';
-            },
+//             updateControls: () => {
+//                 const btn = document.getElementById('tts-play-btn');
+//                 const status = document.getElementById('tts-status');
+//                 btn.innerText = TTS.isPlaying ? '⏸' : '▶';
+//                 status.innerText = TTS.isPlaying ? 'Reproduzindo...' : 'Pausado';
+//             },
 
-            updateMediaSession: (track) => {
-                if ('mediaSession' in navigator) {
-                    navigator.mediaSession.metadata = new MediaMetadata({
-                        title: track.title,
-                        artist: document.getElementById('doc-title').innerText,
-                        album: 'MD Reader'
-                    });
-                    navigator.mediaSession.setActionHandler('play', TTS.toggle);
-                    navigator.mediaSession.setActionHandler('pause', TTS.toggle);
-                    navigator.mediaSession.setActionHandler('previoustrack', TTS.prev);
-                    navigator.mediaSession.setActionHandler('nexttrack', TTS.next);
-                }
-            },
+//             updateMediaSession: (track) => {
+//                 if ('mediaSession' in navigator) {
+//                     navigator.mediaSession.metadata = new MediaMetadata({
+//                         title: track.title,
+//                         artist: document.getElementById('doc-title').innerText,
+//                         album: 'MD Reader'
+//                     });
+//                     navigator.mediaSession.setActionHandler('play', TTS.toggle);
+//                     navigator.mediaSession.setActionHandler('pause', TTS.toggle);
+//                     navigator.mediaSession.setActionHandler('previoustrack', TTS.prev);
+//                     navigator.mediaSession.setActionHandler('nexttrack', TTS.next);
+//                 }
+//             },
             
-            togglePanel: () => document.getElementById('media-bar').classList.toggle('visible')
-        };
+//             togglePanel: () => document.getElementById('media-bar').classList.toggle('visible')
+//         };
+
+        // --- 5. VOZ (Reconhecimento e Síntese) ---
+        const Voice = {
+  enabled: true,
+  lang: 'pt-BR',
+  timeoutMs: 6000,
+
+  getRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return null;
+    const rec = new SR();
+    rec.lang = this.lang;
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.continuous = false;
+    return rec;
+  },
+
+  normalize(s) {
+    return (s || '')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  },
+
+  speakOnce(text, rate = 1.0) {
+    return new Promise((resolve) => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = rate;
+      u.onend = () => resolve();
+      u.onerror = () => resolve();
+      speechSynthesis.speak(u);
+    });
+  },
+
+  async askYesNo(promptText) {
+    const rec = this.getRecognition();
+    if (!this.enabled || !rec) return null;
+
+    // evita capturar o próprio TTS
+    speechSynthesis.cancel();
+
+    const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
+    await this.speakOnce(promptText, rate);
+    await new Promise(r => setTimeout(r, 250));
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        try { rec.stop(); } catch {}
+        resolve(val);
+      };
+
+      const timer = setTimeout(() => finish(null), this.timeoutMs);
+
+      rec.onresult = (e) => {
+        clearTimeout(timer);
+        const said = this.normalize(e.results?.[0]?.[0]?.transcript);
+
+        const yes = ['sim','claro','pode','ok','ler','leia','manda','vai','positivo'];
+        const no  = ['nao','não','negativo','pular','pula','passa','proximo','próximo','skip'];
+
+        if (yes.some(w => said.includes(w))) return finish(true);
+        if (no.some(w => said.includes(w))) return finish(false);
+        return finish(null);
+      };
+
+      rec.onerror = () => { clearTimeout(timer); finish(null); };
+
+      try { rec.start(); }
+      catch { clearTimeout(timer); finish(null); }
+    });
+  }
+};
+
+// const Voice = {
+//   enabled: true, // vai espelhar Config.settings.handsFree
+//   lang: 'pt-BR',
+//   timeoutMs: 6000,
+
+//   // Chrome: webkitSpeechRecognition
+//   getRecognition() {
+//     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+//     if (!SR) return null;
+//     const rec = new SR();
+//     rec.lang = this.lang;
+//     rec.interimResults = false;
+//     rec.maxAlternatives = 1;
+//     rec.continuous = false;
+//     return rec;
+//   },
+
+//   normalize(s) {
+//     return (s || '')
+//       .toLowerCase()
+//       .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+//       .trim();
+//   },
+
+//   // fala e resolve quando terminar
+//   speak(text, rate = 1.0) {
+//     return new Promise((resolve) => {
+//       const u = new SpeechSynthesisUtterance(text);
+//       u.rate = rate;
+//       u.onend = () => resolve();
+//       u.onerror = () => resolve();
+//       window.speechSynthesis.speak(u);
+//     });
+//   },
+
+//   // Pergunta sim/não por voz. Retorna true (sim), false (não), null (timeout/erro)
+//   async askYesNo(promptText) {
+//     const rec = this.getRecognition();
+//     if (!this.enabled || !rec) return null;
+
+//     // 1) garante que não vai capturar o próprio TTS
+//     window.speechSynthesis.cancel();
+
+//     // 2) fala a pergunta (sem mic aberto)
+//     await this.speak(promptText, parseFloat(document.getElementById('tts-speed')?.value) || 1.0);
+
+//     // 3) dá uma micro-pausa (em alguns Android ajuda)
+//     await new Promise(r => setTimeout(r, 250));
+
+//     return new Promise((resolve) => {
+//       let done = false;
+
+//       const finish = (val) => {
+//         if (done) return;
+//         done = true;
+//         try { rec.stop(); } catch {}
+//         resolve(val);
+//       };
+
+//       const timer = setTimeout(() => finish(null), this.timeoutMs);
+
+//       rec.onresult = (e) => {
+//         clearTimeout(timer);
+//         const said = this.normalize(e.results?.[0]?.[0]?.transcript);
+//         if (!said) return finish(null);
+
+//         // Vocabulário “pra vida real”
+//         const yes = ['sim','s','claro','pode','ok','ler','leia','manda','vai','positivo'];
+//         const no  = ['nao','não','n','negativo','pular','pula','passa','proximo','próximo','skip'];
+
+//         if (yes.some(w => said.includes(w))) return finish(true);
+//         if (no.some(w => said.includes(w))) return finish(false);
+
+//         // se falou algo estranho, considera null (pode cair no fallback)
+//         return finish(null);
+//       };
+
+//       rec.onerror = () => {
+//         clearTimeout(timer);
+//         finish(null);
+//       };
+
+//       rec.onend = () => {
+//         // se encerrou sem resultado, timeout/falha
+//         // (não chama finish aqui pra não duplar; timer cuida)
+//       };
+
+//       try {
+//         rec.start();
+//       } catch {
+//         clearTimeout(timer);
+//         finish(null);
+//       }
+//     });
+//   }
+// };
+
+
 
         // --- 5. LÓGICA UI & ARQUIVOS ---
         const Library = {
             importFile: async () => {
-                const input = document.createElement('input'); input.type = 'file';
+                const input = document.createElement('input'); 
+                input.type = 'file';
+                input.accept = '.md,.markdown,.txt,text/markdown,text/plain';
                 input.onchange = async (e) => {
                     const file = e.target.files[0];
                     if(!file) return;
                     const content = await file.text();
                     const fileData = { 
-                        id: Date.now().toString(), 
+                        id: (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString()), 
                         name: file.name, 
                         content, 
                         date: new Date().toISOString() 
@@ -415,12 +1007,47 @@
             toggleTOC: () => document.getElementById('app-container').classList.toggle('show-toc')
         };
 
+        function tableToSpeech(tableEl) {
+  const rows = Array.from(tableEl.querySelectorAll('tr'))
+    .map(tr => Array.from(tr.querySelectorAll('th,td')).map(td => td.innerText.trim()));
+
+  if (!rows.length) return 'Tabela vazia.';
+  const header = rows[0];
+  const body = rows.slice(1);
+
+  let out = `Tabela com ${body.length} linhas e ${header.length} colunas. `;
+  out += `Cabeçalhos: ${header.join(', ')}. `;
+
+  body.slice(0, 20).forEach((r, i) => { // limita pra não virar infinito
+    out += `Linha ${i+1}: ${r.join('; ')}. `;
+  });
+
+  if (body.length > 20) out += `Restante omitido. `;
+  return out;
+}
+
+function setHandsFree(v) {
+  Config.settings.handsFree = v;
+  localStorage.setItem('md_settings', JSON.stringify(Config.settings));
+  Voice.enabled = v;
+}
+
         // Boot
         window.onload = () => {
             Config.apply();
             DB.init().then(Library.loadList);
+
+            let scrollTimer = null;
+            window.addEventListener('scroll', () => {
+            TTS.userIsScrolling = true;
+            clearTimeout(scrollTimer);
+            scrollTimer = setTimeout(() => { TTS.userIsScrolling = false; }, 800);
+            }, { passive: true });
+
+
             if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
         };
+
     </script>
 </body>
 </html>
