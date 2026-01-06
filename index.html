@@ -350,6 +350,34 @@ scrollToChapterById(id) {
   });
 },
 
+
+applySpeechDictionary(text) {
+  let t = text || '';
+
+  // 1) placeholders <objeto> -> objeto  (remove < >)
+  t = t.replace(/<([^>]+)>/g, '$1');
+
+  // 2) trocar ex: / ex.: -> exemplo:
+  t = t.replace(/\bex\.\s*:/gi, 'exemplo:');
+  t = t.replace(/\bex\s*:/gi, 'exemplo:');
+
+  // 3) obs: -> observação:
+  t = t.replace(/\bobs\s*:/gi, 'observação:');
+
+  // 4) etc. -> etcétera (opcional)
+  t = t.replace(/\betc\.\b/gi, 'etcétera');
+
+  // 5) padrões comuns em código
+  t = t.replace(/_/g, ' ');          // calendario_core -> calendario core
+  t = t.replace(/\.sql\b/gi, ' ponto s q l');
+  t = t.replace(/\.py\b/gi, ' ponto p y');
+  t = t.replace(/\.ipynb\b/gi, ' ponto i p i n b');
+
+  return this.cleanText(t);
+},
+
+
+
   // quebra texto grande em chunks (evita TTS engasgar e melhora pausas)
   chunkText(text, maxLen = 900) {
     const t = this.cleanText(text);
@@ -395,8 +423,17 @@ scrollToChapterById(id) {
       if (tag === 'H1' || tag === 'H2') {
         pushChapter();
         chapter = { id: el.id || 'secao', title: this.cleanText(el.innerText) || 'Seção', tokens: [] };
+  // 👇 token para o TTS falar o título
+  pushToken('heading', { text: chapter.title, id: chapter.id });
+
         continue;
       }
+
+      if (tag === 'H3') {
+  const t = this.cleanText(el.innerText);
+  if (t) pushToken('subheading', { text: t, id: el.id || '' });
+  continue;
+}
 
       if (tag === 'P' || tag === 'BLOCKQUOTE') {
         const txt = this.ensureEndPunct(this.cleanText(el.innerText));
@@ -498,6 +535,21 @@ scrollToChapterById(id) {
   async playToken(token) {
     if (this.stopFlag) return;
 
+
+
+if (token.type === 'heading') {
+  await this.speak(`Capítulo. ${this.ensureEndPunct(token.text)}`);
+  await new Promise(r => setTimeout(r, 2000));
+  return;
+}
+
+
+if (token.type === 'subheading') {
+  await this.speak(`Seção. ${this.ensureEndPunct(token.text)}`);
+  await new Promise(r => setTimeout(r, 1200));
+  return;
+}
+
     if (token.type === 'text') {
       const chunks = this.chunkText(token.text);
       for (const c of chunks) {
@@ -538,23 +590,77 @@ scrollToChapterById(id) {
       await this.speak(this.tableToSpeech(token.rows));
       return;
     }
-  },
 
-  speak(text) {
-    return new Promise((resolve) => {
-      if (this.stopFlag) return resolve();
 
-      const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
+},
 
-      this.utterance = new SpeechSynthesisUtterance(text);
-      this.utterance.rate = rate;
 
-      this.utterance.onend = () => resolve();
-      this.utterance.onerror = () => resolve();
+async speak(text) {
+  if (this.stopFlag) return;
 
-      this.synth.speak(this.utterance);
-    });
-  },
+  const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
+  const normalized = this.applySpeechDictionary(text);
+
+  // Se tiver ":" (ex: "SQL: ..."), fala antes, pausa, depois o resto
+  // (funciona bem para “Comentário:” “SQL:” etc.)
+  const parts = normalized.split(':');
+
+  if (parts.length > 1) {
+    // fala "SQL:" (ou o que for antes do primeiro :)
+    await this.speakOnce(parts[0].trim() + ':', rate);
+    await new Promise(r => setTimeout(r, 1500));
+
+    // fala o restante juntando os : extras com pausas menores
+    for (let i = 1; i < parts.length; i++) {
+      if (this.stopFlag) return;
+      const chunk = parts[i].trim();
+      if (!chunk) continue;
+
+      await this.speakOnce(chunk, rate);
+
+      // se tinha múltiplos ":", pausa curta entre segmentos
+      if (i < parts.length - 1) await new Promise(r => setTimeout(r, 800));
+    }
+    return;
+  }
+
+  // sem ":" -> fala normal (mas chunked)
+  const chunks = this.chunkText(normalized);
+  for (const c of chunks) {
+    if (this.stopFlag) return;
+    await this.speakOnce(c, rate);
+  }
+},
+
+speakOnce(text, rate) {
+  return new Promise((resolve) => {
+    if (this.stopFlag) return resolve();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = rate;
+    u.onend = () => resolve();
+    u.onerror = () => resolve();
+    this.synth.speak(u);
+  });
+},
+
+
+//   speak(text) {
+//     return new Promise((resolve) => {
+//       if (this.stopFlag) return resolve();
+
+      
+//         const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
+//       const normalized = this.applySpeechDictionary(text);
+
+//       this.utterance = new SpeechSynthesisUtterance(text);
+//       this.utterance.rate = rate;
+
+//       this.utterance.onend = () => resolve();
+//       this.utterance.onerror = () => resolve();
+
+//       this.synth.speak(this.utterance);
+//     });
+//   },
 
   // ===== controles =====
   play() {
