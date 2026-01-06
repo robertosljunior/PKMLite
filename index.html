@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PKM Lite - Leitor Markdown v1.6</title>
+    <meta name="theme-color" content="#1e1e1e">
+    <link rel="manifest" href="manifest.json">
+    
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;500&family=Merriweather:wght@300;400;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* [Mantive o CSS idêntico ao v1.5 para economizar espaço, insira o CSS da resposta anterior aqui] */
+        :root { --bg-color: #ffffff; --text-color: #2c3e50; --sidebar-bg: #f8f9fa; --primary: #007bff; --accent: #007bff; --border-color: #e9ecef; --font-main: 'Inter', sans-serif; --font-code: 'JetBrains Mono', monospace; --max-width: 720px; --font-size: 18px; --line-height: 1.8; }
+        [data-theme="dark"] { --bg-color: #1a1a1a; --text-color: #e0e0e0; --sidebar-bg: #252525; --border-color: #444; --accent: #4dabf7; }
+        [data-theme="sepia"] { --bg-color: #f4ecd8; --text-color: #5b4636; --sidebar-bg: #e4dcc8; --border-color: #d3c4a9; --accent: #d35400; }
+        body { margin: 0; font-family: var(--font-main); background-color: var(--bg-color); color: var(--text-color); transition: background 0.3s; overflow-x: hidden; }
+        #app-container { display: grid; grid-template-columns: 0 1fr 0; min-height: 100vh; transition: 0.3s; }
+        #app-container.show-sidebar { grid-template-columns: 300px 1fr 0; }
+        #app-container.show-toc { grid-template-columns: 0 1fr 250px; }
+        #app-container.show-all { grid-template-columns: 300px 1fr 250px; }
+        aside#sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border-color); overflow-y: auto; height: 100vh; position: sticky; top: 0; padding: 1rem; display: none; }
+        .show-sidebar aside#sidebar { display: block; }
+        .lib-item { padding: 10px; border-radius: 6px; margin-bottom: 5px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .lib-item:hover { background: rgba(0,0,0,0.05); }
+        .lib-item.active { background: rgba(var(--primary), 0.1); border-left: 3px solid var(--accent); }
+        #content { margin-top: 60px; padding: 40px 20px 150px 20px; max-width: var(--max-width); margin: 0 auto; line-height: var(--line-height); font-size: var(--font-size); }
+        aside#toc { background: var(--bg-color); border-left: 1px solid var(--border-color); height: 100vh; overflow-y: auto; position: sticky; top: 0; padding: 80px 15px 20px 15px; font-size: 0.85rem; display: none; }
+        .show-toc aside#toc, .show-all aside#toc { display: block; }
+        #toc ul { list-style: none; padding: 0; } #toc li { margin-bottom: 8px; } #toc a { text-decoration: none; color: var(--text-color); opacity: 0.7; display: block; transition: 0.2s; border-left: 2px solid transparent; padding-left: 8px;} #toc a:hover, #toc a.active { opacity: 1; color: var(--accent); border-left-color: var(--accent); font-weight: 600; } #toc .toc-h3 { margin-left: 15px; font-size: 0.9em; }
+        header { height: 50px; position: fixed; top: 0; left: 0; right: 0; background: rgba(var(--bg-color), 0.95); backdrop-filter: blur(5px); border-bottom: 1px solid var(--border-color); z-index: 1000; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; }
+        pre { background: #282c34; border-radius: 8px; margin: 1.5rem 0; padding: 15px; overflow-x: auto; }
+        code { font-family: var(--font-code); }
+        #media-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 75px; background: var(--bg-color); border-top: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 2000; transform: translateY(100%); transition: transform 0.3s; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); }
+        #media-bar.visible { transform: translateY(0); }
+        .player-controls { display: flex; gap: 20px; align-items: center; font-size: 1.5rem; }
+        .btn-icon { background:none; border:none; font-size: 1.2rem; cursor: pointer; color: var(--text-color); padding: 5px; }
+        @media (max-width: 768px) { #app-container.show-toc { grid-template-columns: 0 1fr 0; } aside#toc { display: none; } }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div style="display:flex; gap:10px">
+            <button class="btn-icon" onclick="UI.toggleSidebar()">📚</button>
+            <span id="doc-title" style="font-weight:600; font-size:0.9rem; margin-top:5px; white-space:nowrap; overflow:hidden; max-width:200px">Minha Biblioteca</span>
+        </div>
+        <div style="display:flex; gap:10px">
+             <button class="btn-icon" title="Ouvir Podcast" onclick="TTS.togglePanel()">🎧</button>
+             <button class="btn-icon" title="Configurações" onclick="UI.toggleSettings()">⚙️</button>
+             <button class="btn-icon" title="Sumário" onclick="UI.toggleTOC()">📑</button>
+        </div>
+    </header>
+
+    <div id="app-container" class="show-sidebar">
+        <aside id="sidebar">
+            <div id="panel-library">
+                <button onclick="Library.importFile()" style="width:100%; padding:10px; background:var(--accent); color:white; border:none; border-radius:5px; margin-bottom:15px; font-weight:bold">+ Importar</button>
+                <div id="file-list"></div>
+            </div>
+            <div id="panel-settings" style="display:none">
+                 <h3>Aparência</h3>
+                 <button onclick="Config.setTheme('light'); UI.toggleSettings()">☀️ Claro</button>
+                 <button onclick="Config.setTheme('dark'); UI.toggleSettings()">🌙 Escuro</button>
+                 <button onclick="Config.setTheme('sepia'); UI.toggleSettings()">📖 Sépia</button>
+                 <br><br>
+                 <button onclick="UI.toggleSettings()">Voltar</button>
+            </div>
+        </aside>
+
+        <main>
+            <div id="content">
+                <div style="text-align:center; margin-top:100px; color:#888">
+                    <h2>MD Reader v1.6</h2>
+                    <p>Carregue um arquivo para começar.</p>
+                </div>
+            </div>
+        </main>
+
+        <aside id="toc">
+            <h4 style="margin-top:0">Neste documento</h4>
+            <div id="toc-list"></div>
+        </aside>
+    </div>
+
+    <div id="media-bar">
+        <div style="width:30%">
+            <div id="tts-chapter" style="font-weight:bold; font-size:0.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">--</div>
+            <div id="tts-status" style="font-size:0.75rem; opacity:0.7">Parado</div>
+        </div>
+        <div class="player-controls">
+            <span onclick="TTS.prev()" style="cursor:pointer" title="Capítulo Anterior">⏮</span>
+            <span onclick="TTS.toggle()" id="tts-play-btn" style="cursor:pointer; width:40px; text-align:center">▶</span>
+            <span onclick="TTS.next()" style="cursor:pointer" title="Próximo Capítulo">⏭</span>
+        </div>
+        <div style="width:30%; text-align:right">
+            <select id="tts-speed" onchange="TTS.setSpeed(this.value)" style="border:none; bg:transparent">
+                <option value="1">1.0x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2.0x</option>
+            </select>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. BANCO DE DADOS (Correção: Promise Nativa) ---
+        const DB = {
+            dbName: 'MDLibraryDB',
+            version: 1,
+            init: () => new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB.dbName, DB.version);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('files')) {
+                        db.createObjectStore('files', { keyPath: 'id' });
+                    }
+                };
+                req.onsuccess = (e) => resolve(e.target.result);
+                req.onerror = (e) => reject(e);
+            }),
+            saveFile: async (fileData) => {
+                const db = await DB.init();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction('files', 'readwrite');
+                    const store = tx.objectStore('files');
+                    const req = store.put(fileData);
+                    
+                    // A transação completa é a garantia real
+                    tx.oncomplete = () => resolve(req.result);
+                    tx.onerror = () => reject(tx.error);
+                });
+            },
+            getAll: async () => {
+                const db = await DB.init();
+                return new Promise((resolve) => {
+                    const tx = db.transaction('files', 'readonly');
+                    tx.objectStore('files').getAll().onsuccess = (e) => resolve(e.target.result);
+                });
+            },
+            get: async (id) => {
+                const db = await DB.init();
+                return new Promise((resolve) => {
+                    const tx = db.transaction('files', 'readonly');
+                    tx.objectStore('files').get(id).onsuccess = (e) => resolve(e.target.result);
+                });
+            }
+        };
+
+        // --- 2. CONFIGURAÇÃO ---
+        const Config = {
+            settings: JSON.parse(localStorage.getItem('md_settings')) || { theme: 'light', font: "'Inter', sans-serif" },
+            apply: () => {
+                document.documentElement.setAttribute('data-theme', Config.settings.theme);
+            },
+            setTheme: (t) => {
+                Config.settings.theme = t;
+                localStorage.setItem('md_settings', JSON.stringify(Config.settings));
+                Config.apply();
+            }
+        };
+
+        // --- 3. RENDERIZADOR & TOC INTELIGENTE ---
+        const Renderer = {
+            render: (md) => {
+                // 1. Parse básico
+                marked.setOptions({
+                    highlight: (code, lang) => highlight.highlight(code, { language: highlight.getLanguage(lang) ? lang : 'plaintext' }).value
+                });
+                let html = DOMPurify.sanitize(marked.parse(md));
+                
+                // 2. Injeta no DOM para processamento pós-render
+                const contentDiv = document.getElementById('content');
+                contentDiv.innerHTML = html;
+
+                // 3. Processamento de IDs e TOC (Non-destructive)
+                Renderer.processStructure(contentDiv);
+
+                // 4. Extras
+                renderMathInElement(contentDiv, { delimiters: [{left: "$$", right: "$$", display: true}, {left: "$", right: "$", display: false}] });
+                try { mermaid.run({ nodes: document.querySelectorAll('.mermaid') }); } catch(e){}
+                
+                // 5. Build TTS Playlist
+                TTS.buildPlaylist();
+            },
+
+            processStructure: (root) => {
+                const headers = root.querySelectorAll('h1, h2, h3');
+                const tocList = document.getElementById('toc-list');
+                let tocHtml = '<ul>';
+                const usedIds = new Set();
+
+                headers.forEach((h) => {
+                    // Slugify: converte "Meu Título" -> "meu-titulo"
+                    let slug = h.innerText.toLowerCase().trim()
+                        .replace(/[^\w\s-]/g, '')
+                        .replace(/[\s_-]+/g, '-')
+                        .replace(/^-+|-+$/g, '');
+                    
+                    if (!slug) slug = 'secao';
+
+                    // Respeita ID existente, senão gera novo com dedupe
+                    if (!h.id) {
+                        let uniqueSlug = slug;
+                        let counter = 1;
+                        while (usedIds.has(uniqueSlug)) {
+                            uniqueSlug = `${slug}-${counter++}`;
+                        }
+                        h.id = uniqueSlug;
+                    }
+                    usedIds.add(h.id);
+
+                    // Cria link do TOC
+                    const cls = h.tagName === 'H3' ? 'class="toc-h3"' : '';
+                    tocHtml += `<li ${cls}><a href="#${h.id}">${h.innerText}</a></li>`;
+                });
+                
+                tocHtml += '</ul>';
+                tocList.innerHTML = tocHtml;
+
+                // Intersection Observer para Scroll Spy
+                Renderer.initScrollSpy(headers);
+            },
+
+            initScrollSpy: (headers) => {
+                if(Renderer.observer) Renderer.observer.disconnect();
+                Renderer.observer = new IntersectionObserver(entries => {
+                    entries.forEach(entry => {
+                        if (entry.isIntersecting) {
+                            document.querySelectorAll('#toc a').forEach(a => a.classList.remove('active'));
+                            const id = entry.target.id;
+                            const link = document.querySelector(`#toc a[href="#${id}"]`);
+                            if(link) link.classList.add('active');
+                            
+                            // Sincroniza o capítulo do TTS visualmente se não estiver tocando
+                            if (!TTS.isPlaying) {
+                                const index = TTS.playlist.findIndex(track => track.id === id);
+                                if(index >= 0) TTS.updateDisplay(index);
+                            }
+                        }
+                    });
+                }, { rootMargin: '-10% 0px -80% 0px' });
+                headers.forEach(h => Renderer.observer.observe(h));
+            }
+        };
+
+        // --- 4. TTS PODCAST ENGINE (Capítulos) ---
+        const TTS = {
+            synth: window.speechSynthesis,
+            playlist: [], // { id, title, text }
+            currentIndex: 0,
+            isPlaying: false,
+            utterance: null,
+
+            // Varre o DOM para criar capítulos baseados em H1/H2
+            buildPlaylist: () => {
+                TTS.playlist = [];
+                const root = document.getElementById('content');
+                const elements = Array.from(root.children);
+                
+                let currentChapter = { id: 'intro', title: 'Introdução', text: '' };
+                
+                elements.forEach(el => {
+                    // Se for Heading, fecha o capítulo anterior e começa novo
+                    if (['H1', 'H2'].includes(el.tagName)) {
+                        if (currentChapter.text.trim().length > 0) {
+                            TTS.playlist.push(currentChapter);
+                        }
+                        currentChapter = { 
+                            id: el.id, 
+                            title: el.innerText, 
+                            text: '' // Inicia vazio
+                        };
+                    } else {
+                        // Acumula texto (ignora scripts, styles, e mascara código)
+                        if(el.tagName === 'PRE') {
+                            currentChapter.text += " . Trecho de código. . ";
+                        } else if (!['SCRIPT', 'STYLE', 'SVG'].includes(el.tagName)) {
+                            currentChapter.text += el.innerText + ' ';
+                        }
+                    }
+                });
+                // Adiciona o último
+                if (currentChapter.text.trim().length > 0) TTS.playlist.push(currentChapter);
+                
+                TTS.currentIndex = 0;
+                TTS.updateDisplay(0);
+            },
+
+            playChapter: (index) => {
+                TTS.synth.cancel(); // Stop hard
+                if (index < 0 || index >= TTS.playlist.length) return;
+
+                TTS.currentIndex = index;
+                const track = TTS.playlist[index];
+
+                TTS.utterance = new SpeechSynthesisUtterance(track.text);
+                TTS.utterance.rate = parseFloat(document.getElementById('tts-speed').value) || 1.0;
+                
+                // Eventos
+                TTS.utterance.onend = () => TTS.next(); // Auto-play next
+                TTS.utterance.onerror = () => TTS.stop();
+
+                TTS.synth.speak(TTS.utterance);
+                TTS.isPlaying = true;
+                
+                TTS.updateDisplay(index);
+                TTS.updateControls();
+                TTS.updateMediaSession(track);
+            },
+
+            toggle: () => {
+                if (TTS.isPlaying) {
+                    TTS.synth.cancel(); // Pause "real" em mobile é bugado, melhor parar.
+                    TTS.isPlaying = false;
+                    TTS.updateControls();
+                } else {
+                    TTS.playChapter(TTS.currentIndex);
+                }
+            },
+
+            next: () => TTS.playChapter(TTS.currentIndex + 1),
+            prev: () => TTS.playChapter(TTS.currentIndex - 1),
+            setSpeed: (v) => { if(TTS.isPlaying) TTS.playChapter(TTS.currentIndex); }, // Reinicia pra aplicar speed
+
+            updateDisplay: (index) => {
+                if(!TTS.playlist[index]) return;
+                document.getElementById('tts-chapter').innerText = TTS.playlist[index].title;
+            },
+
+            updateControls: () => {
+                const btn = document.getElementById('tts-play-btn');
+                const status = document.getElementById('tts-status');
+                btn.innerText = TTS.isPlaying ? '⏸' : '▶';
+                status.innerText = TTS.isPlaying ? 'Reproduzindo...' : 'Pausado';
+            },
+
+            updateMediaSession: (track) => {
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.metadata = new MediaMetadata({
+                        title: track.title,
+                        artist: document.getElementById('doc-title').innerText,
+                        album: 'MD Reader'
+                    });
+                    navigator.mediaSession.setActionHandler('play', TTS.toggle);
+                    navigator.mediaSession.setActionHandler('pause', TTS.toggle);
+                    navigator.mediaSession.setActionHandler('previoustrack', TTS.prev);
+                    navigator.mediaSession.setActionHandler('nexttrack', TTS.next);
+                }
+            },
+            
+            togglePanel: () => document.getElementById('media-bar').classList.toggle('visible')
+        };
+
+        // --- 5. LÓGICA UI & ARQUIVOS ---
+        const Library = {
+            importFile: async () => {
+                const input = document.createElement('input'); input.type = 'file';
+                input.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if(!file) return;
+                    const content = await file.text();
+                    const fileData = { 
+                        id: Date.now().toString(), 
+                        name: file.name, 
+                        content, 
+                        date: new Date().toISOString() 
+                    };
+                    
+                    try {
+                        await DB.saveFile(fileData); // Agora espera oncomplete real
+                        await Library.loadList();
+                        Library.open(fileData.id);
+                    } catch(err) { alert('Erro ao salvar no DB: ' + err); }
+                };
+                input.click();
+            },
+            loadList: async () => {
+                const files = await DB.getAll();
+                const list = document.getElementById('file-list');
+                list.innerHTML = '';
+                files.sort((a,b) => new Date(b.date) - new Date(a.date)).forEach(f => {
+                    const div = document.createElement('div');
+                    div.className = 'lib-item';
+                    div.innerHTML = `<div><b>${f.name}</b><br><small>${new Date(f.date).toLocaleDateString()}</small></div>`;
+                    div.onclick = () => Library.open(f.id);
+                    list.appendChild(div);
+                });
+            },
+            open: async (id) => {
+                const file = await DB.get(id);
+                document.getElementById('doc-title').innerText = file.name;
+                Renderer.render(file.content);
+                if(window.innerWidth < 768) UI.toggleSidebar();
+            }
+        };
+
+        const UI = {
+            toggleSidebar: () => document.getElementById('app-container').classList.toggle('show-sidebar'),
+            toggleSettings: () => {
+                const s = document.getElementById('panel-settings');
+                const l = document.getElementById('panel-library');
+                s.style.display = s.style.display === 'none' ? 'block' : 'none';
+                l.style.display = s.style.display === 'none' ? 'block' : 'none';
+            },
+            toggleTOC: () => document.getElementById('app-container').classList.toggle('show-toc')
+        };
+
+        // Boot
+        window.onload = () => {
+            Config.apply();
+            DB.init().then(Library.loadList);
+            if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
+        };
+    </script>
+</body>
+</html>
