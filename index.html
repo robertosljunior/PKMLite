@@ -45,8 +45,8 @@
         header { height: 50px; position: fixed; top: 0; left: 0; right: 0; background: rgba(var(--bg-color), 0.95); backdrop-filter: blur(5px); border-bottom: 1px solid var(--border-color); z-index: 1000; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; }
         pre { background: #282c34; border-radius: 8px; margin: 1.5rem 0; padding: 15px; overflow-x: auto; }
         code { font-family: var(--font-code); }
-        #media-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 75px; background: var(--bg-color); border-top: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 9999; transform: translateY(100%); transition: transform 0.3s; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); pointer-events: auto; }
-        #media-bar.visible { transform: translateY(0); }
+        #media-bar { position: fixed !important; bottom: 0 !important; left: 0 !important; right: 0 !important; height: 75px; background: var(--bg-color); border-top: 1px solid var(--border-color); display: flex !important; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 99999 !important; transform: translateY(100%); transition: transform 0.3s; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); pointer-events: auto !important; visibility: visible !important; }
+        #media-bar.visible { transform: translateY(0) !important; }
         .player-controls { display: flex; gap: 20px; align-items: center; font-size: 1.5rem; }
         .btn-icon { background:none; border:none; font-size: 1.2rem; cursor: pointer; color: var(--text-color); padding: 5px; }
         @media (max-width: 768px) { #app-container.show-toc { grid-template-columns: 0 1fr 0; } aside#toc { display: none; } }
@@ -212,7 +212,6 @@ const Config = {
         // --- 3. RENDERIZADOR & TOC INTELIGENTE ---
         const Renderer = {
             render: (md) => {
-                console.log('Renderer.render called');
                 // 1. Parse básico
                 marked.setOptions({
                     highlight: (code, lang) => hljs.highlight(code, {
@@ -232,10 +231,15 @@ const Config = {
                 try { mermaid.run({ nodes: document.querySelectorAll('.mermaid') }); } catch(e){}
 
                 // 5. Build TTS Playlist
-                //TTS.buildPlaylist();
                 TTS.buildPlaylistFromDOM();
 
-                console.log('Renderer.render completed, media-bar exists:', !!document.getElementById('media-bar'));
+                // 6. Mostra o media-bar automaticamente quando MD é carregado (Android fix)
+                setTimeout(() => {
+                    const bar = document.getElementById('media-bar');
+                    if (bar && !bar.classList.contains('visible')) {
+                        bar.classList.add('visible');
+                    }
+                }, 100);
             },
 
             processStructure: (root) => {
@@ -883,15 +887,7 @@ updateDisplay() {
 
   togglePanel: () => {
     const bar = document.getElementById('media-bar');
-    console.log('togglePanel called, current classList:', bar.className);
-    console.log('media-bar computed style:', {
-      transform: getComputedStyle(bar).transform,
-      display: getComputedStyle(bar).display,
-      zIndex: getComputedStyle(bar).zIndex,
-      bottom: getComputedStyle(bar).bottom
-    });
     bar.classList.toggle('visible');
-    console.log('after toggle, classList:', bar.className);
   }
 };
 
