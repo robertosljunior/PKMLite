@@ -48,7 +48,7 @@
         header { height: 50px; position: fixed; top: 0; left: 0; right: 0; background: rgba(var(--bg-color), 0.95); backdrop-filter: blur(5px); border-bottom: 1px solid var(--border-color); z-index: 1000; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; }
         pre { background: #282c34; border-radius: 8px; margin: 1.5rem 0; padding: 15px; overflow-x: auto; }
         code { font-family: var(--font-code); }
-        #media-bar { position: fixed !important; bottom: 0 !important; left: 0 !important; right: 0 !important; height: 75px; background: #2c3e50 !important; border-top: 3px solid #007bff !important; display: flex !important; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 99999 !important; transform: translateY(100%); transition: transform 0.3s; box-shadow: 0 -2px 10px rgba(0,0,0,0.5); pointer-events: auto !important; visibility: visible !important; color: white !important; }
+        #media-bar { position: fixed !important; bottom: 0 !important; left: 0 !important; right: 0 !important; height: 75px; background: #2c3e50 !important; border-top: 3px solid #007bff !important; display: flex !important; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 99999 !important; transform: translateY(0) !important; transition: none; box-shadow: 0 -2px 10px rgba(0,0,0,0.5); pointer-events: auto !important; visibility: visible !important; color: white !important; }
         #media-bar.visible { transform: translateY(0) !important; }
         #media-bar * { color: white !important; }
         .player-controls { display: flex; gap: 20px; align-items: center; font-size: 1.5rem; }
@@ -287,24 +287,12 @@ const Config = {
                 try { mermaid.run({ nodes: document.querySelectorAll('.mermaid') }); } catch(e){}
 
                 // 5. Build TTS Playlist
+                console.log('Iniciando buildPlaylistFromDOM...');
                 TTS.buildPlaylistFromDOM();
+                console.log('Playlist construída. Total de capítulos:', TTS.playlist.length);
 
                 // 6. Mostra o media-bar automaticamente quando MD é carregado (Android fix)
-                console.log('MD renderizado, mostrando media-bar em 100ms...');
-                setTimeout(() => {
-                    const bar = document.getElementById('media-bar');
-                    console.log('Media-bar element:', bar);
-                    console.log('Media-bar classList ANTES:', bar?.className);
-                    console.log('Media-bar computed transform ANTES:', getComputedStyle(bar).transform);
-
-                    // FORÇA o transform diretamente no estilo inline (Android workaround)
-                    bar.style.transform = 'translateY(0)';
-                    bar.classList.add('visible');
-
-                    console.log('Media-bar classList DEPOIS:', bar?.className);
-                    console.log('Media-bar style.transform DEPOIS:', bar?.style.transform);
-                    console.log('Media-bar computed transform DEPOIS:', getComputedStyle(bar).transform);
-                }, 100);
+                console.log('MD renderizado completamente.');
             },
 
             processStructure: (root) => {
@@ -535,8 +523,10 @@ applySpeechDictionary(text) {
 
   // ===== DOM -> playlist tokenizada =====
   buildPlaylistFromDOM() {
+    console.log('[TTS] buildPlaylistFromDOM iniciado');
     const root = document.getElementById('content');
     const children = Array.from(root.children);
+    console.log('[TTS] Total de elementos no content:', children.length);
 
     this.playlist = [];
     let chapter = { id: 'intro', title: 'Introdução', tokens: [] };
@@ -605,6 +595,11 @@ applySpeechDictionary(text) {
     }
 
     pushChapter();
+
+    console.log('[TTS] Playlist construída com', this.playlist.length, 'capítulos');
+    this.playlist.forEach((ch, i) => {
+      console.log(`[TTS] Cap ${i}: "${ch.title}" - ${ch.tokens.length} tokens`);
+    });
 
     this.currentChapter = 0;
     this.currentToken = 0;
@@ -859,14 +854,21 @@ async speakOnce(text, rate) {
 
   // ===== controles =====
   async play() {
-    if (!this.playlist.length) return;
+    console.log('[TTS] play() chamado. Playlist length:', this.playlist.length);
+    if (!this.playlist.length) {
+      console.warn('[TTS] Playlist vazia, abortando play()');
+      return;
+    }
 
     // Garante que vozes estão prontas antes de começar (Android)
+    console.log('[TTS] Inicializando vozes...');
     await this.initVoices();
+    console.log('[TTS] Vozes prontas, iniciando playFromHere()');
     this.playFromHere();
   },
 
   pauseStop() {
+    console.log('[TTS] pauseStop() chamado');
     this.stopFlag = true;
 
     // Libera Wake Lock
@@ -876,8 +878,9 @@ async speakOnce(text, rate) {
     // Tenta múltiplas vezes com delay
     try {
       this.synth.cancel();
+      console.log('[TTS] synth.cancel() executado');
     } catch (e) {
-      console.warn('TTS cancel error:', e);
+      console.warn('[TTS] TTS cancel error:', e);
     }
 
     // Double-tap para garantir (Android workaround)
@@ -885,40 +888,50 @@ async speakOnce(text, rate) {
       try {
         if (this.synth.speaking) {
           this.synth.cancel();
+          console.log('[TTS] synth.cancel() executado (2ª tentativa)');
         }
       } catch (e) {}
     }, 100);
 
     this.isPlaying = false;
     this.updateControls();
+    console.log('[TTS] pauseStop() concluído');
   },
 
   toggle() {
+    console.log('[TTS] toggle() chamado. isPlaying:', this.isPlaying);
     if (this.isPlaying) this.pauseStop();
     else this.play();
   },
 
   next() {
-    // próximo capítulo
+    console.log('[TTS] next() chamado. Capítulo atual:', this.currentChapter);
     this.pauseStop();
     this.currentChapter = Math.min(this.currentChapter + 1, this.playlist.length - 1);
     this.currentToken = 0;
+    console.log('[TTS] Mudou para capítulo:', this.currentChapter);
     this.updateDisplay();
     this.play();
   },
 
   prev() {
+    console.log('[TTS] prev() chamado. Capítulo atual:', this.currentChapter);
     this.pauseStop();
     this.currentChapter = Math.max(this.currentChapter - 1, 0);
     this.currentToken = 0;
+    console.log('[TTS] Mudou para capítulo:', this.currentChapter);
     this.updateDisplay();
     this.play();
   },
 
 updateDisplay() {
   const chap = this.playlist[this.currentChapter];
-  if (!chap) return;
+  if (!chap) {
+    console.warn('[TTS] updateDisplay: capítulo não encontrado, index:', this.currentChapter);
+    return;
+  }
 
+  console.log('[TTS] updateDisplay:', chap.title);
   document.getElementById('tts-chapter').innerText = chap.title;
 
   // highlight + scroll
@@ -940,9 +953,11 @@ updateDisplay() {
     const status = document.getElementById('tts-status');
     btn.innerText = this.isPlaying ? '⏸' : '▶';
     status.innerText = ended ? 'Fim' : (this.isPlaying ? 'Reproduzindo...' : 'Pausado');
+    console.log('[TTS] updateControls: isPlaying:', this.isPlaying, 'ended:', ended);
   },
 
   setSpeed() {
+    console.log('[TTS] setSpeed() chamado');
     // se está tocando, reinicia token atual com nova velocidade
     if (this.isPlaying) {
       this.pauseStop();
@@ -951,8 +966,7 @@ updateDisplay() {
   },
 
   togglePanel: () => {
-    const bar = document.getElementById('media-bar');
-    bar.classList.toggle('visible');
+    console.log('[TTS] togglePanel() chamado (mas media-bar está sempre visível agora)');
   }
 };
 
