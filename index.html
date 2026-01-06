@@ -2,7 +2,10 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>PKM Lite - Leitor Markdown v1.6</title>
     <meta name="theme-color" content="#1e1e1e">
     <link rel="manifest" href="manifest.json">
@@ -296,6 +299,9 @@ const Config = {
   synth: window.speechSynthesis,
   userIsScrolling: false,
 lastAutoScrollAt: 0,
+  voicesLoaded: false,
+  initPromise: null,
+  wakeLock: null,
 
   playlist: [],     // [{ id,title,tokens:[...] }]
   currentChapter: 0,
@@ -304,6 +310,59 @@ lastAutoScrollAt: 0,
   isPlaying: false,
   utterance: null,
   stopFlag: false,
+
+  // Wake Lock para evitar que o device durma (Android)
+  async acquireWakeLock() {
+    if ('wakeLock' in navigator) {
+      try {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        console.log('Wake Lock adquirido');
+
+        this.wakeLock.addEventListener('release', () => {
+          console.log('Wake Lock liberado');
+        });
+      } catch (e) {
+        console.warn('Não foi possível adquirir Wake Lock:', e);
+      }
+    }
+  },
+
+  releaseWakeLock() {
+    if (this.wakeLock) {
+      this.wakeLock.release();
+      this.wakeLock = null;
+    }
+  },
+
+  // Inicializa vozes (Android Chrome precisa disso)
+  initVoices() {
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = new Promise((resolve) => {
+      const voices = this.synth.getVoices();
+      if (voices.length > 0) {
+        this.voicesLoaded = true;
+        resolve();
+        return;
+      }
+
+      // Android Chrome precisa do evento
+      if ('onvoiceschanged' in this.synth) {
+        this.synth.onvoiceschanged = () => {
+          this.voicesLoaded = true;
+          resolve();
+        };
+      } else {
+        // Fallback
+        setTimeout(() => {
+          this.voicesLoaded = true;
+          resolve();
+        }, 100);
+      }
+    });
+
+    return this.initPromise;
+  },
 
   // ===== Util: texto "humano" =====
   cleanText(s) {
@@ -504,6 +563,25 @@ applySpeechDictionary(text) {
     this.isPlaying = true;
     this.updateControls();
 
+    // Adquire Wake Lock para evitar que o device durma
+    await this.acquireWakeLock();
+
+    // Android Chrome workaround: periodicamente verifica se está travado
+    const keepAliveInterval = setInterval(() => {
+      if (!this.isPlaying) {
+        clearInterval(keepAliveInterval);
+        return;
+      }
+
+      // Se synth diz que está falando mas não tem utterance, pode estar travado
+      if (this.synth.speaking && !this.synth.pending && this.utterance) {
+        // "Cutucar" o synth para garantir que está vivo
+        // (Android Chrome bug conhecido)
+        this.synth.pause();
+        this.synth.resume();
+      }
+    }, 5000); // Verifica a cada 5 segundos
+
     while (!this.stopFlag) {
       const chap = this.playlist[this.currentChapter];
       if (!chap) break;
@@ -524,9 +602,15 @@ applySpeechDictionary(text) {
       this.currentToken += 1;
       this.updateDisplay();
 
-      // micro-pausa entre tokens (dá “respiro”)
+      // micro-pausa entre tokens (dá "respiro")
       await new Promise(r => setTimeout(r, 200));
     }
+
+    // Limpa o keepAlive interval
+    clearInterval(keepAliveInterval);
+
+    // Libera Wake Lock
+    this.releaseWakeLock();
 
     this.isPlaying = false;
     this.updateControls(true);
@@ -632,14 +716,52 @@ async speak(text) {
   }
 },
 
-speakOnce(text, rate) {
+async speakOnce(text, rate) {
+  if (this.stopFlag) return;
+
+  // Garante que vozes estão carregadas (crítico no Android)
+  await this.initVoices();
+
   return new Promise((resolve) => {
     if (this.stopFlag) return resolve();
+
     const u = new SpeechSynthesisUtterance(text);
     u.rate = rate;
-    u.onend = () => resolve();
-    u.onerror = () => resolve();
-    this.synth.speak(u);
+
+    // Android Chrome: eventos podem não disparar, usa timeout como fallback
+    let ended = false;
+    const finish = () => {
+      if (ended) return;
+      ended = true;
+      resolve();
+    };
+
+    // Timeout de segurança (texto.length * fator + margem)
+    const estimatedDuration = (text.length / rate) * 60 + 2000;
+    const safetyTimeout = setTimeout(finish, estimatedDuration);
+
+    u.onend = () => {
+      clearTimeout(safetyTimeout);
+      finish();
+    };
+
+    u.onerror = (e) => {
+      console.warn('TTS error:', e);
+      clearTimeout(safetyTimeout);
+      finish();
+    };
+
+    // Android Chrome: pequeno delay antes de speak() após cancel() anterior
+    // Para evitar race condition
+    setTimeout(() => {
+      if (!this.stopFlag) {
+        this.synth.speak(u);
+        this.utterance = u;
+      } else {
+        clearTimeout(safetyTimeout);
+        finish();
+      }
+    }, 50);
   });
 },
 
@@ -663,14 +785,37 @@ speakOnce(text, rate) {
 //   },
 
   // ===== controles =====
-  play() {
+  async play() {
     if (!this.playlist.length) return;
+
+    // Garante que vozes estão prontas antes de começar (Android)
+    await this.initVoices();
     this.playFromHere();
   },
 
   pauseStop() {
     this.stopFlag = true;
-    this.synth.cancel();
+
+    // Libera Wake Lock
+    this.releaseWakeLock();
+
+    // Android Chrome: cancel() pode falhar silenciosamente
+    // Tenta múltiplas vezes com delay
+    try {
+      this.synth.cancel();
+    } catch (e) {
+      console.warn('TTS cancel error:', e);
+    }
+
+    // Double-tap para garantir (Android workaround)
+    setTimeout(() => {
+      try {
+        if (this.synth.speaking) {
+          this.synth.cancel();
+        }
+      } catch (e) {}
+    }, 100);
+
     this.isPlaying = false;
     this.updateControls();
   },
@@ -906,13 +1051,40 @@ updateDisplay() {
       .trim();
   },
 
-  speakOnce(text, rate = 1.0) {
+  async speakOnce(text, rate = 1.0) {
+    // Aguarda vozes carregarem (Android Chrome precisa)
+    await TTS.initVoices();
+
     return new Promise((resolve) => {
       const u = new SpeechSynthesisUtterance(text);
       u.rate = rate;
-      u.onend = () => resolve();
-      u.onerror = () => resolve();
-      speechSynthesis.speak(u);
+
+      let ended = false;
+      const finish = () => {
+        if (ended) return;
+        ended = true;
+        resolve();
+      };
+
+      // Timeout de segurança
+      const estimatedDuration = (text.length / rate) * 60 + 2000;
+      const safetyTimeout = setTimeout(finish, estimatedDuration);
+
+      u.onend = () => {
+        clearTimeout(safetyTimeout);
+        finish();
+      };
+
+      u.onerror = (e) => {
+        console.warn('Voice TTS error:', e);
+        clearTimeout(safetyTimeout);
+        finish();
+      };
+
+      // Delay de 50ms após qualquer cancel anterior (Android workaround)
+      setTimeout(() => {
+        speechSynthesis.speak(u);
+      }, 50);
     });
   },
 
@@ -920,8 +1092,16 @@ updateDisplay() {
     const rec = this.getRecognition();
     if (!this.enabled || !rec) return null;
 
-    // evita capturar o próprio TTS
-    speechSynthesis.cancel();
+    // evita capturar o próprio TTS (Android: tenta 2x)
+    try {
+      speechSynthesis.cancel();
+      await new Promise(r => setTimeout(r, 100));
+      if (speechSynthesis.speaking) {
+        speechSynthesis.cancel();
+      }
+    } catch (e) {
+      console.warn('Cancel error in askYesNo:', e);
+    }
 
     const rate = parseFloat(document.getElementById('tts-speed')?.value) || 1.0;
     await this.speakOnce(promptText, rate);
@@ -950,10 +1130,26 @@ updateDisplay() {
         return finish(null);
       };
 
-      rec.onerror = () => { clearTimeout(timer); finish(null); };
+      rec.onerror = (e) => {
+        console.warn('Speech Recognition error:', e.error);
+        clearTimeout(timer);
+        finish(null);
+      };
 
-      try { rec.start(); }
-      catch { clearTimeout(timer); finish(null); }
+      // Android Chrome: às vezes onend não dispara
+      rec.onend = () => {
+        if (!done) {
+          console.log('Recognition ended without result');
+        }
+      };
+
+      try {
+        rec.start();
+      } catch (e) {
+        console.warn('Failed to start recognition:', e);
+        clearTimeout(timer);
+        finish(null);
+      }
     });
   }
 };
@@ -1143,6 +1339,10 @@ function setHandsFree(v) {
             Config.apply();
             DB.init().then(Library.loadList);
 
+            // Pré-carrega vozes (Android Chrome)
+            TTS.initVoices();
+
+            // Detecção de scroll manual
             let scrollTimer = null;
             window.addEventListener('scroll', () => {
             TTS.userIsScrolling = true;
@@ -1150,6 +1350,23 @@ function setHandsFree(v) {
             scrollTimer = setTimeout(() => { TTS.userIsScrolling = false; }, 800);
             }, { passive: true });
 
+            // Android Chrome: pausa TTS quando app vai para background
+            let wasPlayingBeforeHidden = false;
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    // Salva estado antes de ocultar
+                    wasPlayingBeforeHidden = TTS.isPlaying;
+                    if (wasPlayingBeforeHidden) {
+                        console.log('App em background - pausando TTS');
+                        TTS.pauseStop();
+                    }
+                } else {
+                    // Quando volta, re-adquire Wake Lock se estava tocando
+                    if (wasPlayingBeforeHidden && 'wakeLock' in navigator) {
+                        TTS.acquireWakeLock();
+                    }
+                }
+            });
 
             if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
         };
