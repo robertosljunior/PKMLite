@@ -294,17 +294,16 @@ const Config = {
                 setTimeout(() => {
                     const bar = document.getElementById('media-bar');
                     console.log('Media-bar element:', bar);
-                    console.log('Media-bar classList:', bar?.className);
-                    console.log('Media-bar style.transform:', bar?.style.transform);
-                    console.log('Media-bar computed transform:', getComputedStyle(bar).transform);
-                    console.log('Media-bar computed bottom:', getComputedStyle(bar).bottom);
-                    if (bar && !bar.classList.contains('visible')) {
-                        bar.classList.add('visible');
-                        console.log('Media-bar classe "visible" adicionada');
-                        console.log('Media-bar computed transform após:', getComputedStyle(bar).transform);
-                    } else {
-                        console.log('Media-bar já estava visible ou não existe');
-                    }
+                    console.log('Media-bar classList ANTES:', bar?.className);
+                    console.log('Media-bar computed transform ANTES:', getComputedStyle(bar).transform);
+
+                    // FORÇA o transform diretamente no estilo inline (Android workaround)
+                    bar.style.transform = 'translateY(0)';
+                    bar.classList.add('visible');
+
+                    console.log('Media-bar classList DEPOIS:', bar?.className);
+                    console.log('Media-bar style.transform DEPOIS:', bar?.style.transform);
+                    console.log('Media-bar computed transform DEPOIS:', getComputedStyle(bar).transform);
                 }, 100);
             },
 
