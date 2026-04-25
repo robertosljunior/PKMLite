@@ -195,6 +195,39 @@
             }
         };
 
+        // --- FILE HANDLER API (Abre .md direto do sistema Android) ---
+        const FileHandler = {
+            init() {
+                if (!('launchQueue' in window)) {
+                    console.log('[FileHandler] launchQueue não suportado neste browser');
+                    return;
+                }
+
+                console.log('[FileHandler] launchQueue disponível, registrando consumer...');
+
+                window.launchQueue.setConsumer(async (launchParams) => {
+                    if (!launchParams.files || launchParams.files.length === 0) {
+                        console.log('[FileHandler] Nenhum arquivo recebido via launchQueue');
+                        return;
+                    }
+
+                    console.log(`[FileHandler] ${launchParams.files.length} arquivo(s) recebido(s)`);
+
+                    for (const handle of launchParams.files) {
+                        try {
+                            console.log('[FileHandler] Processando:', handle.name);
+                            const file = await handle.getFile();
+                            const content = await file.text();
+                            console.log(`[FileHandler] Arquivo lido: ${file.name} (${content.length} chars)`);
+                            await Library.importFromExternal(file.name, content);
+                        } catch (err) {
+                            console.error('[FileHandler] Erro ao abrir arquivo:', err);
+                        }
+                    }
+                });
+            }
+        };
+
         // --- 1. BANCO DE DADOS (Correção: Promise Nativa) ---
         const DB = {
             dbName: 'MDLibraryDB',
@@ -1454,6 +1487,34 @@ updateDisplay() {
                 document.getElementById('doc-title').innerText = file.name;
                 Renderer.render(file.content);
                 if(window.innerWidth < 768) UI.toggleSidebar();
+            },
+
+            importFromExternal: async (name, content) => {
+                console.log('[Library] importFromExternal:', name);
+                const fileData = {
+                    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                    name,
+                    content,
+                    date: new Date().toISOString()
+                };
+
+                try {
+                    await DB.saveFile(fileData);
+                    console.log('[Library] Arquivo salvo no IndexedDB:', name);
+                    await Library.loadList();
+                    document.getElementById('doc-title').innerText = name;
+                    Renderer.render(content);
+                    // Fecha sidebar em mobile para dar espaço ao conteúdo
+                    if (window.innerWidth < 768) {
+                        const container = document.getElementById('app-container');
+                        if (container.classList.contains('show-sidebar')) {
+                            container.classList.remove('show-sidebar');
+                        }
+                    }
+                    console.log('[Library] Arquivo aberto via sistema:', name);
+                } catch (err) {
+                    console.error('[Library] Erro ao salvar arquivo externo:', err);
+                }
             }
         };
 
@@ -1503,6 +1564,9 @@ function setHandsFree(v) {
             // Inicia debug console PRIMEIRO
             DebugConsole.init();
             console.log('PKMLite v1.6.1 iniciando...');
+
+            // File Handler API - abre arquivos .md do sistema Android
+            FileHandler.init();
 
             Config.apply();
             console.log('Configurações aplicadas');
